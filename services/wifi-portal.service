@@ -1,0 +1,11 @@
+[Unit]
+Description=WiFi Setup Portal
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/bin/wifi-portal-start.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

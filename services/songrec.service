@@ -1,0 +1,19 @@
+[Unit]
+Description=Song Recognition Flask App
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi
+ExecStart=/usr/bin/python3 /home/pi/app.py
+KillSignal=SIGINT
+ExecStop=/bin/kill -s SIGINT $MAINPID
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
