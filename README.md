@@ -1,11 +1,11 @@
 # SongRecPi 🎵
 
-A Raspberry Pi kiosk that continuously listens to ambient audio and displays the currently playing song — title, artist, and album art — on an attached LCD screen. Think of it as a always-on Shazam display.
+A Raspberry Pi kiosk that continuously listens to ambient audio and displays the currently playing song title, artist, and album art on an attached LCD screen.
 
 ## Hardware
 
-- Raspberry Pi (tested on Pi 3B+)
-- GeeekPi 3.5" TFT Touchscreen LCD ([Amazon](https://amazon.com/GeeekPi-Raspberry-Touchscreen-Heatsinks-320x480/dp/B083C12N57/)) — 320×480, uses `tft35a` driver
+- Raspberry Pi (tested on Pi 4)
+- GeeekPi 3.5" TFT Touchscreen LCD ([Amazon](https://amazon.com/GeeekPi-Raspberry-Touchscreen-Heatsinks-320x480/dp/B083C12N57/)) 
 - USB microphone
 
 ## How It Works
@@ -41,35 +41,8 @@ Then reboot:
 sudo reboot
 ```
 
-> **Note:** SongRec is compiled from source via Cargo, so the first install takes a while (20–40 minutes on a Pi 3). Go make a coffee.
+> **Note:** SongRec is compiled from source via Cargo, so the first install takes a while (20–40 minutes ish)
 
-## Cloning to a New Pi
-
-The fastest way to duplicate this setup is a full SD card image:
-
-```bash
-# On Linux/Mac — image your existing card
-sudo dd if=/dev/sdX of=~/songrecpi-backup.img bs=4M status=progress
-
-# Flash to new card
-sudo dd if=~/songrecpi-backup.img of=/dev/sdY bs=4M status=progress
-```
-
-Use [Balena Etcher](https://etcher.balena.io/) on Windows.
-
-After first boot on the new Pi, change the hostname to avoid network conflicts:
-
-```bash
-sudo raspi-config  # → System Options → Hostname
-sudo rm /etc/ssh/ssh_host_*
-sudo dpkg-reconfigure openssh-server
-```
-
-Before imaging, clear your WiFi credentials so the recipient goes through the portal setup:
-
-```bash
-sudo nmcli connection delete "YourNetworkName"
-```
 
 ## File Structure
 
@@ -116,10 +89,4 @@ If already connected but portal ran anyway, check that NetworkManager settled be
 ```bash
 nmcli dev wifi list
 sudo nmcli dev wifi connect "NetworkName" password "password"
-```
-
-**LCD not displaying**
-Confirm the overlay is present in `/boot/config.txt`:
-```
-dtoverlay=tft35a:rotate=270
 ```
