@@ -16,7 +16,7 @@ echo "================================================"
 
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo ""
-echo "[1/7] Installing system packages..."
+echo "[1/8] Installing system packages..."
 sudo apt update
 sudo apt install -y \
     python3-pip \
@@ -30,12 +30,12 @@ sudo apt install -y \
 
 # ── 2. Python dependencies ────────────────────────────────────────────────────
 echo ""
-echo "[2/7] Installing Python dependencies..."
+echo "[2/8] Installing Python dependencies..."
 pip3 install -r "$REPO_DIR/requirements.txt" --break-system-packages
 
 # ── 3. Rust + SongRec ─────────────────────────────────────────────────────────
 echo ""
-echo "[3/7] Installing Rust and SongRec..."
+echo "[3/8] Installing Rust and SongRec..."
 if ! command -v cargo &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     source "$HOME/.cargo/env"
@@ -51,7 +51,7 @@ fi
 
 # ── 4. LCD display driver ─────────────────────────────────────────────────────
 echo ""
-echo "[4/7] Configuring LCD display (tft35a, rotate=270)..."
+echo "[4/8] Configuring LCD display (tft35a, rotate=270)..."
 # The tft35a overlay is what drives the GeeekPi 3.5" display.
 # If you have a different display, adjust the overlay name and rotation below.
 if ! grep -q "dtoverlay=tft35a" /boot/config.txt; then
@@ -63,7 +63,7 @@ fi
 
 # ── 5. App files ──────────────────────────────────────────────────────────────
 echo ""
-echo "[5/7] Installing app files..."
+echo "[5/8] Installing app files..."
 cp "$REPO_DIR/app.py" /home/pi/app.py
 
 sudo cp "$REPO_DIR/scripts/wifi-portal.py" /usr/local/bin/wifi-portal.py
@@ -73,16 +73,50 @@ sudo chmod +x /usr/local/bin/wifi-portal-start.sh
 
 # ── 6. Systemd services ───────────────────────────────────────────────────────
 echo ""
-echo "[6/7] Installing and enabling systemd services..."
+echo "[6/8] Installing and enabling systemd services..."
 sudo cp "$REPO_DIR/services/songrec.service" /etc/systemd/system/songrec.service
 sudo cp "$REPO_DIR/services/wifi-portal.service" /etc/systemd/system/wifi-portal.service
 sudo systemctl daemon-reload
 sudo systemctl enable songrec
 sudo systemctl enable wifi-portal
 
-# ── 7. Kiosk autostart ────────────────────────────────────────────────────────
+# ── 7. Storage management ─────────────────────────────────────────────────────
 echo ""
-echo "[7/7] Configuring kiosk autostart..."
+echo "[7/8] Configuring storage management..."
+
+# Cap systemd journal to 50MB total and 10MB per file
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/size.conf > /dev/null <<EOF
+[Journal]
+SystemMaxUse=50M
+SystemMaxFileSize=10M
+RuntimeMaxUse=20M
+EOF
+sudo systemctl restart systemd-journald
+
+# Logrotate config for songrec service logs
+sudo tee /etc/logrotate.d/songrec > /dev/null <<EOF
+/var/log/songrec/*.log {
+    daily
+    rotate 3
+    compress
+    missingok
+    notifempty
+    create 0640 pi pi
+}
+EOF
+
+# Weekly cron to clean apt cache and temp files
+(crontab -l 2>/dev/null; echo "0 3 * * 0 sudo apt-get clean && sudo rm -rf /tmp/*.wav /tmp/wifi-networks.txt") | crontab -
+
+# Disable swap to reduce SD card wear on always-on device
+sudo dphys-swapfile swapoff
+sudo dphys-swapfile uninstall
+sudo systemctl disable dphys-swapfile
+
+# ── 8. Kiosk autostart ────────────────────────────────────────────────────────
+echo ""
+echo "[8/8] Configuring kiosk autostart..."
 mkdir -p /home/pi/.config/autostart
 cat > /home/pi/.config/autostart/kiosk.desktop <<EOF
 [Desktop Entry]
