@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh
 #
-# Fresh install script for SongRecPi on Raspberry Pi OS Bullseye (32-bit).
+# Fresh install script for SongRecPi on Raspberry Pi OS Trixie (64-bit).
 # Tested on a GeeekPi 3.5" TFT LCD (tft35a driver, 320x480).
 #
 # Run as pi user (script will sudo where needed):
@@ -20,18 +20,24 @@ echo "[1/8] Installing system packages..."
 sudo apt update
 sudo apt install -y \
     python3-pip \
+    python3-flask \
     network-manager \
     libasound2-dev \
     libssl-dev \
     curl \
     git \
-    chromium-browser \
+    chromium \
     unclutter
 
 # ── 2. Python dependencies ────────────────────────────────────────────────────
 echo ""
 echo "[2/8] Installing Python dependencies..."
-pip3 install -r "$REPO_DIR/requirements.txt" --break-system-packages
+# Try apt-installed flask first (preferred on Trixie), fall back to pip
+if ! python3 -c "import flask" 2>/dev/null; then
+    pip3 install -r "$REPO_DIR/requirements.txt" --break-system-packages
+else
+    echo "Flask already available via system packages, skipping pip."
+fi
 
 # ── 3. Rust + SongRec ─────────────────────────────────────────────────────────
 echo ""
@@ -52,13 +58,18 @@ fi
 # ── 4. LCD display driver ─────────────────────────────────────────────────────
 echo ""
 echo "[4/8] Configuring LCD display (tft35a, rotate=270)..."
-# The tft35a overlay is what drives the GeeekPi 3.5" display.
-# If you have a different display, adjust the overlay name and rotation below.
-if ! grep -q "dtoverlay=tft35a" /boot/config.txt; then
-    echo "dtoverlay=tft35a:rotate=270" | sudo tee -a /boot/config.txt
-    echo "LCD overlay added to /boot/config.txt"
+# On Trixie the boot config moved to /boot/firmware/config.txt
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG=/boot/firmware/config.txt
 else
-    echo "LCD overlay already present in /boot/config.txt, skipping."
+    BOOT_CONFIG=/boot/config.txt
+fi
+
+if ! grep -q "dtoverlay=tft35a" "$BOOT_CONFIG"; then
+    echo "dtoverlay=tft35a:rotate=270" | sudo tee -a "$BOOT_CONFIG"
+    echo "LCD overlay added to $BOOT_CONFIG"
+else
+    echo "LCD overlay already present in $BOOT_CONFIG, skipping."
 fi
 
 # ── 5. App files ──────────────────────────────────────────────────────────────
@@ -110,9 +121,13 @@ EOF
 (crontab -l 2>/dev/null; echo "0 3 * * 0 sudo apt-get clean && sudo rm -rf /tmp/*.wav /tmp/wifi-networks.txt") | crontab -
 
 # Disable swap to reduce SD card wear on always-on device
-sudo dphys-swapfile swapoff
-sudo dphys-swapfile uninstall
-sudo systemctl disable dphys-swapfile
+if systemctl is-enabled dphys-swapfile &>/dev/null; then
+    sudo dphys-swapfile swapoff
+    sudo dphys-swapfile uninstall
+    sudo systemctl disable dphys-swapfile
+else
+    echo "dphys-swapfile not present, skipping."
+fi
 
 # ── 8. Kiosk autostart ────────────────────────────────────────────────────────
 echo ""
@@ -122,7 +137,7 @@ cat > /home/pi/.config/autostart/kiosk.desktop <<EOF
 [Desktop Entry]
 Type=Application
 Name=SongRecPi Kiosk
-Exec=chromium-browser --kiosk --noerrdialogs --disable-infobars --no-first-run http://localhost:5000
+Exec=chromium --kiosk --noerrdialogs --disable-infobars --no-first-run --disable-translate --check-for-update-interval=31536000 http://localhost:5000
 EOF
 
 # Hide cursor on idle
