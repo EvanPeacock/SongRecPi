@@ -210,7 +210,7 @@ def songrec_worker():
 # WiFi setup state + QR codes
 # --------------------------------------------------------------------------------------
 def read_setup_state() -> Optional[Dict[str, Any]]:
-    """Written by the WiFi portal while the setup hotspot is up; absent otherwise."""
+    """Written by the WiFi portal at boot ("checking", then "setup"); absent otherwise."""
     try:
         with open(SETUP_STATE_FILE, encoding="utf-8") as f:
             state = json.load(f)
@@ -384,7 +384,7 @@ body.idle #idle { opacity:1; animation:breathe 4s ease-in-out infinite; }
 body.setup #panel, body.setup #idle { display:none; }
 body.setup #setup { display:flex; }
 #setup h1 { margin:0; font-size:1.25rem; font-weight:600; }
-.qr-row { display:flex; gap:6vw; justify-content:center; }
+.qr-row { display:flex; gap:16vw; justify-content:center; }
 .qr-cell { display:flex; flex-direction:column; align-items:center; gap:1vh; }
 .qr-cell img {
     width:min(30vw, 52vh);
@@ -408,7 +408,7 @@ html, body, body * {
 }
 </style>
 </head>
-<body>
+<body class="idle">
   <div id="panel">
       <div id="albumArt"></div>
       <div class="track-info">
@@ -459,7 +459,10 @@ async function fetchTrack() {
 function render(data) {
     if (renderSetup(data.setup)) return;
 
-    const idle = IDLE_TIMEOUT > 0 && (!data.updated || (data.now - data.updated) > IDLE_TIMEOUT);
+    // While the boot script waits for a network, say so instead of "Listening..."
+    const checking = !!(data.setup && data.setup.mode === 'checking');
+    document.getElementById('idle').textContent = checking ? 'Connecting to Wi-Fi…' : 'Listening…';
+    const idle = checking || (IDLE_TIMEOUT > 0 && (!data.updated || (data.now - data.updated) > IDLE_TIMEOUT));
     document.body.classList.toggle('idle', idle);
 
     const title = data.title || '-';

@@ -2,11 +2,15 @@
 # wifi-portal-start.sh
 #
 # Called by wifi-portal.service on boot.
-# Waits (up to ~60s) for NetworkManager to connect, and only launches the
-# hotspot + captive portal if no connection is found.
+# Waits for NetworkManager to connect, and only launches the hotspot + captive
+# portal if no connection is found. The wait is ~60s when a WiFi network is
+# saved (to give it time to connect), but only ~15s when none is (e.g. a freshly
+# gifted Pi), which is just long enough for a plugged-in ethernet cable.
 #
-# While the hotspot is up, /run/songrecpi/setup.json tells the kiosk to show the
-# WiFi setup QR codes. The portal removes it again once the Pi is connected.
+# /run/songrecpi/setup.json tells the kiosk what to show:
+#   mode "checking"  while waiting  -> "Connecting to Wi-Fi..."
+#   mode "setup"     hotspot is up  -> the WiFi setup QR codes
+# It is removed once the Pi is connected.
 
 set -u
 
@@ -23,22 +27,42 @@ STATE_FILE="$STATE_DIR/setup.json"
 NETWORKS_FILE="$STATE_DIR/networks.txt"
 PORTAL=${PORTAL:-/opt/songrecpi/wifi-portal.py}
 WAIT_SECS=${WAIT_SECS:-60}
+NO_SAVED_WAIT_SECS=${NO_SAVED_WAIT_SECS:-15}
 
 is_connected() {
     # "connected", "connected (site only)" and "connected (local only)" all count
     nmcli -t -f STATE general 2>/dev/null | grep -q '^connected'
 }
 
+has_saved_wifi() {
+    # Any saved WiFi client profile (access-point profiles like our hotspot don't count).
+    local uuid type
+    while IFS=: read -r uuid type; do
+        [ "$type" = 802-11-wireless ] || continue
+        [ "$(nmcli -g 802-11-wireless.mode connection show "$uuid" 2>/dev/null)" = ap ] && continue
+        return 0
+    done < <(nmcli -t -f UUID,TYPE connection show 2>/dev/null)
+    return 1
+}
+
 write_state() {
     mkdir -p "$STATE_DIR"
     chmod 755 "$STATE_DIR"
-    printf '{"mode":"setup","status":"%s","ssid":""}\n' "$1" > "$STATE_FILE.tmp"
+    printf '{"mode":"%s","status":"%s","ssid":""}\n' "$1" "$2" > "$STATE_FILE.tmp"
     chmod 644 "$STATE_FILE.tmp"
     mv "$STATE_FILE.tmp" "$STATE_FILE"
 }
 
+if has_saved_wifi; then
+    wait_secs=$WAIT_SECS
+else
+    wait_secs=$NO_SAVED_WAIT_SECS
+    echo "No saved WiFi networks; waiting only ${wait_secs}s (for ethernet) before the hotspot."
+fi
+
+write_state checking waiting
 waited=0
-while [ "$waited" -lt "$WAIT_SECS" ]; do
+while [ "$waited" -lt "$wait_secs" ]; do
     if is_connected; then
         echo "Already connected to a network, skipping WiFi portal."
         rm -f "$STATE_FILE"
@@ -48,8 +72,7 @@ while [ "$waited" -lt "$WAIT_SECS" ]; do
     waited=$((waited + 2))
 done
 
-echo "No network connection after ${WAIT_SECS}s. Scanning for nearby networks..."
-mkdir -p "$STATE_DIR"
+echo "No network connection after ${wait_secs}s. Scanning for nearby networks..."
 nmcli dev wifi rescan ifname "$WIFI_IFACE" 2>/dev/null
 sleep 4
 nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$WIFI_IFACE" > "$NETWORKS_FILE"
@@ -63,7 +86,7 @@ if ! nmcli dev wifi hotspot ifname "$WIFI_IFACE" con-name "$HOTSPOT_CON" \
 fi
 # Never let the hotspot profile auto-activate instead of the home network.
 nmcli con modify "$HOTSPOT_CON" connection.autoconnect no
-write_state waiting
+write_state setup waiting
 sleep 3
 
 echo "Starting captive portal on 10.42.0.1..."
