@@ -329,8 +329,9 @@ if [ "$UPDATE" = 1 ]; then
         if pgrep -u "$RUN_USER" -x 'labwc|wayfire' >/dev/null; then
             KIOSK_ENV+=(WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR="/run/user/$RUN_UID")
         fi
-        run pkill -u "$RUN_USER" -f "$APP_DIR/kiosk.sh" || true
-        # Anchored to the executable so it can't match a shell whose command line mentions it.
+        # Patterns are anchored to the executable so they can't match some other
+        # shell whose command line merely mentions kiosk.sh or Chromium.
+        run pkill -u "$RUN_USER" -f "^(/usr)?/bin/bash $APP_DIR/kiosk\.sh" || true
         run pkill -u "$RUN_USER" -f '^[^ ]*chromium[^ ]* .*--app=http://(localhost|127\.0\.0\.1):5000' || true
         [ "$DRY_RUN" = 0 ] && sleep 2
         if [ "$DRY_RUN" = 1 ]; then echo "  + ${KIOSK_ENV[*]} setsid $APP_DIR/kiosk.sh &"
