@@ -1,6 +1,6 @@
 # Rendered by install.sh: @USER@, @HOME@, @APP_DIR@ and @SONGREC_PATH@ are replaced.
 [Unit]
-Description=SongRecPi song recognition + kiosk web app
+Description=SongRecPi song recognition, kiosk screen and settings page
 After=network-online.target sound.target
 Wants=network-online.target
 
@@ -8,6 +8,8 @@ Wants=network-online.target
 Type=simple
 User=@USER@
 SupplementaryGroups=audio
+# Serve the settings / WiFi setup page on port 80 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 WorkingDirectory=@HOME@
 ExecStart=/usr/bin/python3 @APP_DIR@/app.py
 Environment=PYTHONUNBUFFERED=1

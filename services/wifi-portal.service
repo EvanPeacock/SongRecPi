@@ -1,17 +1,12 @@
 # Rendered by install.sh: @APP_DIR@ is replaced.
 [Unit]
-Description=SongRecPi WiFi setup portal (hotspot when no known network)
-After=NetworkManager.service
+Description=SongRecPi WiFi setup hotspot (when no known network is found at boot)
+After=NetworkManager.service systemd-tmpfiles-setup.service
 Wants=NetworkManager.service
 
 [Service]
 Type=simple
 ExecStart=@APP_DIR@/wifi-portal-start.sh
-Environment=PYTHONUNBUFFERED=1
-Environment=PORTAL=@APP_DIR@/wifi-portal.py
-# /run/songrecpi holds setup.json for the kiosk; removed when this service stops.
-RuntimeDirectory=songrecpi
-RuntimeDirectoryMode=0755
 Restart=no
 
 [Install]

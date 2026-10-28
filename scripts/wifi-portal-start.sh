@@ -2,15 +2,19 @@
 # wifi-portal-start.sh
 #
 # Called by wifi-portal.service on boot.
-# Waits for NetworkManager to connect, and only launches the hotspot + captive
-# portal if no connection is found. The wait is ~60s when a WiFi network is
-# saved (to give it time to connect), but only ~15s when none is (e.g. a freshly
-# gifted Pi), which is just long enough for a plugged-in ethernet cable.
+# Waits for NetworkManager to connect, and only starts the setup hotspot if no
+# connection is found. The wait is ~60s when a WiFi network is saved (to give it
+# time to connect), but only ~15s when none is (e.g. a freshly gifted Pi), which is
+# just long enough for a plugged-in ethernet cable.
+#
+# The setup page itself is served by app.py on port 80: it reads the state below,
+# connects to the chosen network and clears the state.
 #
 # /run/songrecpi/setup.json tells the kiosk what to show:
 #   mode "checking"  while waiting  -> "Connecting to Wi-Fi..."
 #   mode "setup"     hotspot is up  -> the WiFi setup QR codes
-# It is removed once the Pi is connected.
+# It is removed once the Pi is connected. /run/songrecpi is created at boot by
+# /etc/tmpfiles.d/songrecpi.conf, owned by the app's user so the app can update it.
 
 set -u
 
@@ -25,7 +29,6 @@ WIFI_IFACE="wlan0"
 STATE_DIR=${STATE_DIR:-/run/songrecpi}
 STATE_FILE="$STATE_DIR/setup.json"
 NETWORKS_FILE="$STATE_DIR/networks.txt"
-PORTAL=${PORTAL:-/opt/songrecpi/wifi-portal.py}
 WAIT_SECS=${WAIT_SECS:-60}
 NO_SAVED_WAIT_SECS=${NO_SAVED_WAIT_SECS:-15}
 
@@ -47,7 +50,6 @@ has_saved_wifi() {
 
 write_state() {
     mkdir -p "$STATE_DIR"
-    chmod 755 "$STATE_DIR"
     printf '{"mode":"%s","status":"%s","ssid":""}\n' "$1" "$2" > "$STATE_FILE.tmp"
     chmod 644 "$STATE_FILE.tmp"
     mv "$STATE_FILE.tmp" "$STATE_FILE"
@@ -87,8 +89,4 @@ fi
 # Never let the hotspot profile auto-activate instead of the home network.
 nmcli con modify "$HOTSPOT_CON" connection.autoconnect no
 write_state setup waiting
-sleep 3
-
-echo "Starting captive portal on 10.42.0.1..."
-export SONGRECPI_CONF="$CONF" STATE_DIR
-exec python3 "$PORTAL"
+echo "Hotspot up; the setup page is at http://10.42.0.1 (served by songrec.service)."

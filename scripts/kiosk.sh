@@ -9,7 +9,10 @@
 
 set -u
 
-URL=${KIOSK_URL:-http://127.0.0.1:5000}
+# shellcheck disable=SC1091
+[ -r /etc/default/songrecpi ] && . /etc/default/songrecpi   # may set PORT
+BASE="http://127.0.0.1:${PORT:-80}"
+URL=${KIOSK_URL:-$BASE/kiosk}
 LITE=0
 [ "${1:-}" = "--lite" ] && LITE=1
 
@@ -45,7 +48,7 @@ if [ "$LITE" = 1 ]; then
 fi
 
 for _ in $(seq 1 90); do
-    curl -sf -o /dev/null "$URL/current" && break
+    curl -sf -o /dev/null "$BASE/current" && break
     sleep 1
 done
 

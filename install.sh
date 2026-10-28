@@ -173,9 +173,15 @@ fi
 
 # ── 4. App files ──────────────────────────────────────────────────────────────
 step 4/9 "App files → $APP_DIR"
-for f in app.py scripts/wifi-portal.py scripts/wifi-portal-start.sh scripts/kiosk.sh scripts/kiosk-x.sh; do
+for f in app.py wifi.py scripts/wifi-portal-start.sh scripts/kiosk.sh scripts/kiosk-x.sh; do
     put_file "$APP_DIR/$(basename "$f")" 755 root < "$REPO_DIR/$f" && echo "  updated $(basename "$f")" || true
 done
+for src in "$REPO_DIR"/templates/*.html; do
+    t=templates/$(basename "$src")
+    put_file "$APP_DIR/$t" 644 root < "$src" && echo "  updated $t" || true
+done
+# The setup portal is now part of app.py.
+[ -e "$APP_DIR/wifi-portal.py" ] && as_root rm -f "$APP_DIR/wifi-portal.py" && echo "  removed old wifi-portal.py"
 if [ ! -f /etc/songrecpi.conf ]; then
     put_file /etc/songrecpi.conf 644 root < "$REPO_DIR/config/songrecpi.conf" || true
     echo "  created /etc/songrecpi.conf"
@@ -197,6 +203,23 @@ for u in songrec wifi-portal; do
 done
 [ "$UNITS_CHANGED" = 1 ] && as_root systemctl daemon-reload
 as_root systemctl enable --quiet songrec wifi-portal
+
+# /run/songrecpi (WiFi setup state) is written by the root boot script and updated by
+# the app, so it's created at every boot owned by the app's user.
+if echo "d /run/songrecpi 0755 $RUN_USER $RUN_USER -" | put_file /etc/tmpfiles.d/songrecpi.conf 644 root; then
+    echo "  wrote /etc/tmpfiles.d/songrecpi.conf"
+    as_root systemd-tmpfiles --create /etc/tmpfiles.d/songrecpi.conf
+fi
+
+# The app changes WiFi settings (setup page, settings page) via `sudo -n nmcli`.
+SUDOERS_TMP=$(mktemp)
+echo "$RUN_USER ALL=(root) NOPASSWD: $(command -v nmcli || echo /usr/bin/nmcli)" > "$SUDOERS_TMP"
+if ! sudo visudo -cqf "$SUDOERS_TMP"; then
+    echo "Generated sudoers rule is invalid; not installing it." >&2
+elif put_file /etc/sudoers.d/songrecpi 440 root < "$SUDOERS_TMP"; then
+    echo "  allowed $RUN_USER to run nmcli via sudo (/etc/sudoers.d/songrecpi)"
+fi
+rm -f "$SUDOERS_TMP"
 
 # ── 6. Captive portal DNS ─────────────────────────────────────────────────────
 step 6/9 "Captive portal DNS"
@@ -254,7 +277,7 @@ MARK_END="# <<< songrecpi kiosk <<<"
 for f in "$AUTOSTART"/*.desktop; do
     [ -f "$f" ] || continue
     [ "$(basename "$f")" = songrecpi-kiosk.desktop ] && continue
-    if grep -qE 'localhost:5000|127\.0\.0\.1:5000|^Exec=unclutter' "$f"; then
+    if grep -qE '(localhost|127\.0\.0\.1):5000|^Exec=unclutter' "$f"; then
         run mv "$f" "$f.old"
         echo "  retired $(basename "$f")"
     fi
@@ -316,8 +339,8 @@ if [ "$UPDATE" = 1 ]; then
     echo "Restarting songrec..."
     as_root systemctl restart songrec
     if [ "$DRY_RUN" = 0 ]; then
-        for _ in $(seq 1 20); do curl -sf -o /dev/null http://127.0.0.1:5000/current && break; sleep 1; done
-        if curl -sf -o /dev/null http://127.0.0.1:5000/current; then echo "  app is up"
+        for _ in $(seq 1 20); do curl -sf -o /dev/null http://127.0.0.1/current && break; sleep 1; done
+        if curl -sf -o /dev/null http://127.0.0.1/current; then echo "  app is up"
         else echo "  WARNING: app not answering yet; check: journalctl -u songrec -n 50" >&2; fi
     fi
 
@@ -332,7 +355,7 @@ if [ "$UPDATE" = 1 ]; then
         # Patterns are anchored to the executable so they can't match some other
         # shell whose command line merely mentions kiosk.sh or Chromium.
         run pkill -u "$RUN_USER" -f "^(/usr)?/bin/bash $APP_DIR/kiosk\.sh" || true
-        run pkill -u "$RUN_USER" -f '^[^ ]*chromium[^ ]* .*--app=http://(localhost|127\.0\.0\.1):5000' || true
+        run pkill -u "$RUN_USER" -f '^[^ ]*chromium[^ ]* .*--app=http://(localhost|127\.0\.0\.1)[:/]' || true
         [ "$DRY_RUN" = 0 ] && sleep 2
         if [ "$DRY_RUN" = 1 ]; then echo "  + ${KIOSK_ENV[*]} setsid $APP_DIR/kiosk.sh &"
         else env "${KIOSK_ENV[@]}" setsid "$APP_DIR/kiosk.sh" </dev/null >/dev/null 2>&1 & fi
@@ -353,6 +376,8 @@ echo "  On first boot without a known WiFi network the screen shows two"
 echo "  QR codes: scan the first to join the setup hotspot, the second to"
 # shellcheck disable=SC1091
 echo "  open the setup page (or join $(. /etc/songrecpi.conf 2>/dev/null; echo "${HOTSPOT_SSID:-SongRecPi}") and open http://10.42.0.1)."
+echo ""
+echo "  Settings (mute, history, WiFi): http://$(hostname).local on your network."
 echo ""
 echo "  Reboot now to start everything:"
 echo "    sudo reboot"

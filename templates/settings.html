@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SongRecPi</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% include "_style.html" %}
+    <style>
+        .now { display: flex; gap: 12px; align-items: center; }
+        .art { width: 64px; height: 64px; border-radius: 8px; background: #333 center/cover no-repeat; flex-shrink: 0; }
+        .meta { flex: 1; min-width: 0; }
+        .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .artist { color: #aaa; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; margin-top: 4px; }
+        .pill.on { background: #143a20; color: #9be89b; }
+        .pill.off { background: #3a1414; color: #ff8a80; }
+        .history { list-style: none; padding: 0; margin: 0; }
+        .history li { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #222; }
+        .history .art { width: 48px; height: 48px; }
+        .history .when { color: #777; font-size: 12px; }
+        .links { margin-top: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+        .links a { white-space: nowrap; }
+        .net { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #222; }
+        .inuse { color: #9be89b; font-size: 12px; margin-left: 6px; }
+        .check { display: flex; gap: 8px; align-items: center; }
+        footer { color: #666; font-size: 12px; margin-top: 32px; }
+    </style>
+</head>
+<body>
+    <h2>🎵 SongRecPi</h2>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}<p class="{{ category }}">{{ message }}</p>{% endfor %}
+    {% endwith %}
+
+    <div class="card now">
+        <div class="art" id="nowArt" {% if track.album_art and view == "song" %}style="background-image:url('{{ track.album_art }}')"{% endif %}></div>
+        <div class="meta">
+            <div class="title" id="nowTitle">{{ track.title if view == "song" else ("Muted" if muted else "Listening…") }}</div>
+            <div class="artist" id="nowArtist">{{ track.artist if view == "song" else "" }}</div>
+            <span class="pill {{ 'off' if muted else 'on' }}" id="micPill">{{ "Mic off" if muted else "Mic on" }}</span>
+        </div>
+    </div>
+    <form method="POST" action="/api/mute" id="muteForm">
+        <input type="hidden" name="muted" id="muteValue" value="{{ '0' if muted else '1' }}">
+        <button type="submit" id="muteBtn" class="{{ '' if muted else 'secondary' }}">{{ "Unmute" if muted else "Mute (turn the mic off)" }}</button>
+    </form>
+
+    <h3>Recently recognized</h3>
+    {% if history %}
+    <ul class="history">
+        {% for item in history %}
+        <li>
+            <div class="art" {% if item.album_art %}style="background-image:url('{{ item.album_art }}')"{% endif %}></div>
+            <div class="meta">
+                <div class="title">{{ item.title }}</div>
+                <div class="artist">{{ item.artist }}</div>
+                <div class="when">{{ item.time | clock }}</div>
+                <div class="links">{% for link in item.links %}<a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.name }}</a>{% endfor %}</div>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>Nothing yet. Songs show up here as they're recognized.</p>
+    {% endif %}
+
+    <h3 id="wifi">WiFi</h3>
+    <div class="card">
+        {% for n in saved %}
+        <div class="net">
+            <span>{{ n.name }}{% if n.active %}<span class="inuse">● in use</span>{% endif %}</span>
+            {% if not n.active %}
+            <form method="POST" action="/wifi/forget" onsubmit="return confirm('Forget this network?')">
+                <input type="hidden" name="uuid" value="{{ n.uuid }}">
+                <button type="submit" class="small secondary">Forget</button>
+            </form>
+            {% endif %}
+        </div>
+        {% else %}
+        <p>No saved networks.</p>
+        {% endfor %}
+    </div>
+    <form method="POST" action="/wifi/add">
+        <p>Add a network. It's saved and used automatically whenever it's in range, e.g. if you move the Pi.</p>
+        <input type="text" name="ssid" list="visible" placeholder="Network name" autocapitalize="none" autocorrect="off" required>
+        <datalist id="visible">{% for n in visible %}<option value="{{ n.ssid }}">{% endfor %}</datalist>
+        <input type="password" name="password" placeholder="Password (empty if open)">
+        <label class="check"><input type="checkbox" name="hidden"> Hidden network</label>
+        <button type="submit" class="secondary">Save network</button>
+    </form>
+
+    <footer>{{ urls.name }}{% if urls.ip %} · {{ urls.ip }}{% endif %}</footer>
+
+    <script>
+        // Keep the "now playing" card and mute button current without reloading.
+        function setMuted(m) {
+            document.getElementById('micPill').className = 'pill ' + (m ? 'off' : 'on');
+            document.getElementById('micPill').textContent = m ? 'Mic off' : 'Mic on';
+            document.getElementById('muteValue').value = m ? '0' : '1';
+            var btn = document.getElementById('muteBtn');
+            btn.textContent = m ? 'Unmute' : 'Mute (turn the mic off)';
+            btn.className = m ? '' : 'secondary';
+        }
+        function refresh() {
+            fetch('/current', {cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (d) {
+                var song = d.view === 'song';
+                document.getElementById('nowTitle').textContent = song ? d.title : (d.muted ? 'Muted' : 'Listening…');
+                document.getElementById('nowArtist').textContent = song ? d.artist : '';
+                document.getElementById('nowArt').style.backgroundImage =
+                    song && d.album_art ? 'url("' + d.album_art.replace(/["\\\n]/g, '\\$&') + '")' : '';
+                setMuted(d.muted);
+            }).catch(function () {});
+        }
+        document.getElementById('muteForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var m = document.getElementById('muteValue').value === '1';
+            fetch('/api/mute', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({muted: m})})
+                .then(function () { setMuted(m); refresh(); });
+        });
+        setInterval(refresh, 4000);
+    </script>
+</body>
+</html>
