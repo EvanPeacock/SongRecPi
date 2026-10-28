@@ -330,7 +330,8 @@ if [ "$UPDATE" = 1 ]; then
             KIOSK_ENV+=(WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR="/run/user/$RUN_UID")
         fi
         run pkill -u "$RUN_USER" -f "$APP_DIR/kiosk.sh" || true
-        run pkill -u "$RUN_USER" -f 'chromium.*(localhost|127\.0\.0\.1):5000' || true
+        # Anchored to the executable so it can't match a shell whose command line mentions it.
+        run pkill -u "$RUN_USER" -f '^[^ ]*chromium[^ ]* .*--app=http://(localhost|127\.0\.0\.1):5000' || true
         [ "$DRY_RUN" = 0 ] && sleep 2
         if [ "$DRY_RUN" = 1 ]; then echo "  + ${KIOSK_ENV[*]} setsid $APP_DIR/kiosk.sh &"
         else env "${KIOSK_ENV[@]}" setsid "$APP_DIR/kiosk.sh" </dev/null >/dev/null 2>&1 & fi
