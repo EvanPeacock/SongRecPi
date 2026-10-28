@@ -118,8 +118,8 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
         echo "Only $(avail_mb) MB free on /; free some space first (need ~300 MB headroom)." >&2
         exit 1
     fi
-    as_root apt-get update
-    as_root apt-get install -y --no-install-recommends "${MISSING[@]}"
+    as_root apt-get update -q
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${MISSING[@]}"
     as_root apt-get clean
 else
     echo "All packages present."
@@ -149,7 +149,7 @@ else
         exit 1
     fi
     echo "Building songrec (CLI only) from source; this takes 20-40 minutes on a Pi..."
-    as_root apt-get install -y --no-install-recommends build-essential pkg-config \
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential pkg-config \
         libasound2-dev libssl-dev libglib2.0-dev gettext
     if ! command -v cargo >/dev/null && [ ! -x "$RUN_HOME/.cargo/bin/cargo" ]; then
         if [ "$DRY_RUN" = 1 ]; then echo "  + install rustup"
@@ -217,10 +217,10 @@ SystemMaxUse=50M
 SystemMaxFileSize=10M
 RuntimeMaxUse=20M
 EOF
-then as_root systemctl restart systemd-journald; fi
+then echo "  capped the journal at 50 MB"; as_root systemctl restart systemd-journald; fi
 
 # Weekly cleanup of the apt cache and temp files
-put_file /etc/cron.weekly/songrecpi 755 root <<'EOF' || true
+put_file /etc/cron.weekly/songrecpi 755 root <<'EOF' && echo "  wrote /etc/cron.weekly/songrecpi" || true
 #!/bin/sh
 # SongRecPi weekly cleanup (installed by install.sh)
 apt-get clean

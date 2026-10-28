@@ -31,7 +31,9 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xset >/dev/null; then
     xset -dpms
 fi
 if [ "$LITE" = 0 ] && [ -z "${WAYLAND_DISPLAY:-}" ] && command -v unclutter >/dev/null; then
-    pgrep -u "$USER" -x unclutter >/dev/null || unclutter -idle 0.1 -root &
+    if ! pgrep -u "$USER" -x unclutter >/dev/null; then
+        unclutter -idle 0.1 -root &
+    fi
 fi
 
 # Without a window manager (Lite), Chromium needs to be told the screen size.
