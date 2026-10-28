@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connecting...</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% include "_style.html" %}
+    <style> body { text-align: center; } </style>
+</head>
+<body>
+    <h2>🎵 Connecting...</h2>
+    <p>Connecting to <b>{{ ssid }}</b> now.</p>
+    <p>This page will go offline in a moment — that's expected.</p>
+    <p>If the SongRecPi screen shows “Listening…”, it worked. If it says the password
+       was wrong, rejoin the <b>{{ hotspot }}</b> network and try again.</p>
+    <p>Once you're back on your home WiFi, the settings page is at <b>{{ settings }}</b>.</p>
+</body>
+</html>

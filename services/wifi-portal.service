@@ -1,10 +1,12 @@
+# Rendered by install.sh: @APP_DIR@ is replaced.
 [Unit]
-Description=WiFi Setup Portal
-After=NetworkManager.service
+Description=SongRecPi WiFi setup hotspot (when no known network is found at boot)
+After=NetworkManager.service systemd-tmpfiles-setup.service
 Wants=NetworkManager.service
 
 [Service]
-ExecStart=/usr/local/bin/wifi-portal-start.sh
+Type=simple
+ExecStart=@APP_DIR@/wifi-portal-start.sh
 Restart=no
 
 [Install]

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SongRecPi WiFi Setup</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% include "_style.html" %}
+</head>
+<body>
+    <h2>🎵 SongRecPi Setup</h2>
+    <p>Connect to your WiFi network to get started.</p>
+    {% if failed %}
+    <p class="error">Couldn’t connect to <b>{{ failed_ssid or "that network" }}</b>. Check the password and try again.</p>
+    {% endif %}
+    <form method="POST" action="/connect">
+        <label for="ssid">Select your network:</label>
+        <select name="ssid" id="ssid">
+            {% for n in networks %}
+            <option value="{{ n.ssid }}" data-open="{{ 1 if n.open else 0 }}">{{ n.ssid }}{{ "" if n.open else " 🔒" }} (signal: {{ n.signal }})</option>
+            {% endfor %}
+            <option value="{{ other }}" data-open="0">Other (hidden network)…</option>
+        </select>
+        <div id="hiddenBox">
+            <label for="hidden_ssid">Hidden network name:</label>
+            <input type="text" name="hidden_ssid" id="hidden_ssid" autocapitalize="none" autocorrect="off">
+        </div>
+        <div id="pwBox">
+            <label for="password">Password:</label>
+            <input type="password" name="password" id="password" placeholder="WiFi password">
+        </div>
+        <button type="submit">Connect</button>
+    </form>
+    <script>
+        var sel = document.getElementById('ssid');
+        function sync() {
+            var opt = sel.options[sel.selectedIndex];
+            document.getElementById('hiddenBox').style.display = sel.value === '{{ other }}' ? '' : 'none';
+            document.getElementById('pwBox').style.display = opt && opt.dataset.open === '1' ? 'none' : '';
+        }
+        sel.addEventListener('change', sync);
+        sync();
+    </script>
+</body>
+</html>

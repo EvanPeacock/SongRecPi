@@ -1,19 +1,27 @@
+# Rendered by install.sh: @USER@, @HOME@, @APP_DIR@ and @SONGREC_PATH@ are replaced.
 [Unit]
-Description=Song Recognition Flask App
+Description=SongRecPi song recognition, kiosk screen and settings page
 After=network-online.target sound.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi
-ExecStart=/usr/bin/python3 /home/pi/app.py
-KillSignal=SIGINT
-ExecStop=/bin/kill -s SIGINT $MAINPID
-TimeoutStopSec=10
-Restart=on-failure
-RestartSec=3
+User=@USER@
+SupplementaryGroups=audio
+# Serve the settings / WiFi setup page on port 80 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+WorkingDirectory=@HOME@
+ExecStart=/usr/bin/python3 @APP_DIR@/app.py
 Environment=PYTHONUNBUFFERED=1
+Environment=SONGREC_PATH=@SONGREC_PATH@
+# Optional overrides (HOST, PORT, IDLE_TIMEOUT, ...) go in this file.
+EnvironmentFile=-/etc/default/songrecpi
+# Python handles SIGINT cleanly and stops songrec; KillMode signals the whole cgroup.
+KillSignal=SIGINT
 KillMode=control-group
+TimeoutStopSec=10
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
