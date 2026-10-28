@@ -135,7 +135,7 @@ body.view-quiet #idle {
 }
 
 /* Only the song view is colored; listening, connecting and muted are plain black */
-body.view-listening, body.view-quiet, body.view-checking, body.view-muted { background:#000 !important; }
+body.view-loading, body.view-listening, body.view-quiet, body.view-checking, body.view-muted { background:#000 !important; }
 
 /* Muted: black screen, small hint, gear for the settings QR */
 #muted, #settingsQr { display:none; }
@@ -152,12 +152,16 @@ body.view-muted:not(.qr-open) #muted { display:block; }
 }
 #muted .hint svg { width:14px; height:14px; }
 #gear {
+    /* The icon sits 17px from the corner, but the tap target covers the whole
+       top-right area: resistive touch panels are imprecise. */
     position:fixed;
     top:0; right:0;
-    width:56px; height:56px;           /* generous target for a resistive touch panel */
+    width:150px; height:120px;
+    box-sizing:border-box;
+    padding:17px;
     display:flex;
-    align-items:center;
-    justify-content:center;
+    align-items:flex-start;
+    justify-content:flex-end;
     color:#5a5a5a;
 }
 #gear svg { width:22px; height:22px; }
@@ -220,7 +224,7 @@ html, body, body * {
 }
 </style>
 </head>
-<body class="view-listening">
+<body class="view-loading">
   <div id="panel">
       <div id="albumArt"></div>
       <div class="track-info">
@@ -268,7 +272,7 @@ const TAP_SETTLE = 1500;     // ignore stale polls right after a tap
 let lastId = "";
 let lastArtURL = "";
 let colorToken = 0;
-let view = 'listening';
+let view = 'loading';    // blank until the first /current answer
 let qrOpen = false;
 let lastTap = 0;
 let expectMuted = null;
@@ -354,7 +358,7 @@ function renderSetup(setup) {
 // Tap anywhere: mute (black screen, mic off) / unmute. In muted mode the gear shows
 // a QR code for the settings page instead; tapping again closes it.
 document.addEventListener('click', (e) => {
-    if (view === 'setup' || view === 'checking') return;
+    if (view === 'setup' || view === 'checking' || view === 'loading') return;
     if (qrOpen) { qrOpen = false; applyView(); return; }
     if (view === 'muted' && e.target.closest('#gear')) { openSettingsQr(); return; }
     if (Date.now() - lastTap < 800) return;   // swallow double taps
