@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """
-SongRec Flask Kiosk App (centered adaptive panel + auto display power management)
+SongRec Flask Kiosk App (centered adaptive panel + on-screen WiFi setup)
 
 Features:
-- Background thread running `songrec listen --json` (restarts with exponential backoff).
-- Fast shutdown: tracks subprocess; terminates on SIGINT/SIGTERM.
-- /current JSON endpoint.
+- Background thread running `songrec listen --json` (restarts with exponential backoff;
+  the backoff resets after a run that lasted more than a minute).
+- Fast shutdown: tracks subprocess; terminates on SIGINT/SIGTERM and exits.
+- /current JSON endpoint (track info + WiFi setup state).
+- /qr/wifi.svg and /qr/portal.svg: offline QR codes shown during WiFi setup.
 - Root (/) serves kiosk UI with:
     * Centered translucent panel that grows with content but keeps >=5px margin to edges.
     * Multi-line wrapping with adaptive clamping & album art shrinking to fit vertically.
     * Dynamic background gradient from album art dominant color.
     * Flash animation on track change.
+    * "Listening..." idle view after IDLE_TIMEOUT seconds without a new recognition.
+    * WiFi setup view (two QR codes + status) while the setup hotspot is running.
     * Hidden cursor.
 Environment Variables:
-    SONGREC_PATH              (default: /home/pi/.cargo/bin/songrec)
-    HOST                      (default: 0.0.0.0)
+    SONGREC_PATH              (default: ~/.cargo/bin/songrec)
+    HOST                      (default: 127.0.0.1)
     PORT                      (default: 5000)
     POLL_INTERVAL             (seconds, float, default 1.0)
+    IDLE_TIMEOUT              (seconds, default 600; 0 disables the idle view)
+    SONGRECPI_CONF            (default: /etc/songrecpi.conf)
+    SETUP_STATE_FILE          (default: /run/songrecpi/setup.json)
 """
 
+import io
 import os
 import sys
 import json
@@ -27,16 +35,25 @@ import signal
 import logging
 import threading
 import subprocess
+from functools import lru_cache
 from typing import Dict, Any, Optional
 
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, abort
 
 # --------------------------------------------------------------------------------------
 # Configuration
 # --------------------------------------------------------------------------------------
-SONGREC_PATH = os.environ.get("SONGREC_PATH", "/home/pi/.cargo/bin/songrec")
+SONGREC_PATH = os.environ.get("SONGREC_PATH", os.path.expanduser("~/.cargo/bin/songrec"))
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "1.0"))
 POLL_INTERVAL_MS = int(POLL_INTERVAL * 1000)
+IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))
+CONF_PATH = os.environ.get("SONGRECPI_CONF", "/etc/songrecpi.conf")
+SETUP_STATE_FILE = os.environ.get("SETUP_STATE_FILE", "/run/songrecpi/setup.json")
+PORTAL_URL = "http://10.42.0.1"
+
+BACKOFF_MIN = 3
+BACKOFF_MAX = 60
+STABLE_RUN_SECS = 60   # a run longer than this resets the backoff
 
 # Logging
 logging.basicConfig(
@@ -45,6 +62,27 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger("songrec-app")
+# The kiosk polls /current every second; don't log each request.
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
+def load_conf(path: str) -> Dict[str, str]:
+    """Read the shared KEY="value" config (also sourced by wifi-portal-start.sh)."""
+    conf = {"HOTSPOT_SSID": "SongRecPi", "HOTSPOT_PASSWORD": "songrecpi"}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                conf[key.strip()] = value.strip().strip("\"'")
+    except FileNotFoundError:
+        pass
+    return conf
+
+
+CONF = load_conf(CONF_PATH)
 
 # --------------------------------------------------------------------------------------
 # Shared State
@@ -62,93 +100,143 @@ proc_ref: Optional[subprocess.Popen] = None   # reference to songrec subprocess
 # --------------------------------------------------------------------------------------
 # SongRec Worker
 # --------------------------------------------------------------------------------------
-def songrec_worker():
-    global proc_ref
-    backoff = 3
-    max_backoff = 60
-    time.sleep(2)  # allow audio stack to settle
+def handle_line(raw_line: str):
+    line = raw_line.strip()
+    if not line or not line.startswith("{"):
+        return
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    track = data.get("track") if isinstance(data, dict) else None
+    if not isinstance(track, dict):
+        return
+    title = track.get("title") or "-"
+    artist = track.get("subtitle") or "-"
+    images = track.get("images") or {}
+    album_art = images.get("coverart") or images.get("coverarthq") or ""
 
-    while not stop_event.is_set():
-        if not os.path.isfile(SONGREC_PATH):
-            log.error("songrec not found at %s", SONGREC_PATH)
-            time.sleep(min(backoff, 30))
-            continue
+    with track_lock:
+        changed = (
+            title != current_track["title"] or
+            artist != current_track["artist"] or
+            album_art != current_track["album_art"]
+        )
+        current_track.update({
+            "title": title,
+            "artist": artist,
+            "album_art": album_art,
+            "updated": int(time.time())
+        })
 
-        cmd = ["/usr/bin/stdbuf", "-oL", SONGREC_PATH, "listen", "--json"]
-        log.info("Starting songrec: %s", " ".join(cmd))
+    if changed:
+        log.info("Track: %s - %s", artist, title)
+
+
+def terminate_songrec():
+    proc = proc_ref
+    if proc and proc.poll() is None:
+        log.info("Terminating songrec subprocess...")
         try:
-            proc_ref = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-        except Exception:
-            log.exception("Failed to start songrec")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
-            continue
+            proc.terminate()
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            log.warning("songrec did not terminate; killing.")
+            proc.kill()
 
-        if proc_ref.stdout is None:
-            log.error("songrec started without a stdout pipe; aborting this run.")
-            try:
-                proc_ref.terminate()
-            except Exception:
-                pass
-            proc_ref = None
-            time.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
-            continue
 
-        for raw_line in proc_ref.stdout:
-            if stop_event.is_set():
-                break
-            line = raw_line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "track" in data:
-                track = data["track"]
-                title = track.get("title") or "-"
-                artist = track.get("subtitle") or "-"
-                images = track.get("images") or {}
-                album_art = images.get("coverart") or images.get("coverarthq") or ""
+def run_songrec_once():
+    """Run songrec until it exits (or we're stopping), feeding its output to handle_line."""
+    global proc_ref
+    if not os.path.isfile(SONGREC_PATH):
+        log.error("songrec not found at %s", SONGREC_PATH)
+        return
 
-                with track_lock:
-                    changed = (
-                        title != current_track["title"] or
-                        artist != current_track["artist"] or
-                        album_art != current_track["album_art"]
-                    )
-                    current_track.update({
-                        "title": title,
-                        "artist": artist,
-                        "album_art": album_art,
-                        "updated": int(time.time())
-                    })
+    cmd = [SONGREC_PATH, "listen", "--json", "--disable-mpris"]
+    if os.path.exists("/usr/bin/stdbuf"):
+        cmd = ["/usr/bin/stdbuf", "-oL"] + cmd
+    log.info("Starting songrec: %s", " ".join(cmd))
+    proc_ref = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1
+    )
+    if proc_ref.stdout is None:
+        log.error("songrec started without a stdout pipe; aborting this run.")
+        terminate_songrec()
+        return
 
-                if changed:
-                    log.info("Track: %s - %s", artist, title)
-
+    for raw_line in proc_ref.stdout:
         if stop_event.is_set():
             break
-
-        rc = proc_ref.wait()
-        log.warning("songrec exited (code=%s). Restarting in %ss", rc, backoff)
-        time.sleep(backoff)
-        backoff = min(backoff * 2, max_backoff)
-
-    if proc_ref and proc_ref.poll() is None:
         try:
-            proc_ref.terminate()
-            proc_ref.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc_ref.kill()
+            handle_line(raw_line)
+        except Exception:
+            log.exception("Failed to handle songrec output line: %r", raw_line[:200])
+
+    if stop_event.is_set():
+        return
+    rc = proc_ref.wait()
+    log.warning("songrec exited (code=%s)", rc)
+
+
+def songrec_worker():
+    backoff = BACKOFF_MIN
+    if stop_event.wait(2):  # allow audio stack to settle
+        return
+
+    while not stop_event.is_set():
+        started = time.monotonic()
+        try:
+            run_songrec_once()
+        except Exception:
+            log.exception("songrec run failed")
+        if stop_event.is_set():
+            break
+        if time.monotonic() - started > STABLE_RUN_SECS:
+            backoff = BACKOFF_MIN
+        log.warning("Restarting songrec in %ss", backoff)
+        if stop_event.wait(backoff):
+            break
+        backoff = min(backoff * 2, BACKOFF_MAX)
+
+    terminate_songrec()
     log.info("songrec_worker exiting.")
+
+# --------------------------------------------------------------------------------------
+# WiFi setup state + QR codes
+# --------------------------------------------------------------------------------------
+def read_setup_state() -> Optional[Dict[str, Any]]:
+    """Written by the WiFi portal while the setup hotspot is up; absent otherwise."""
+    try:
+        with open(SETUP_STATE_FILE, encoding="utf-8") as f:
+            state = json.load(f)
+    except (FileNotFoundError, PermissionError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def wifi_qr_escape(value: str) -> str:
+    for ch in ('\\', ';', ',', ':', '"'):
+        value = value.replace(ch, '\\' + ch)
+    return value
+
+
+@lru_cache(maxsize=4)
+def qr_svg(payload: str) -> Optional[bytes]:
+    try:
+        import qrcode
+        import qrcode.image.svg
+    except ImportError:
+        log.warning("python3-qrcode not installed; QR codes unavailable.")
+        return None
+    img = qrcode.make(payload, image_factory=qrcode.image.svg.SvgPathFillImage, border=2)
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue()
 
 # --------------------------------------------------------------------------------------
 # Flask App / HTML
@@ -204,6 +292,7 @@ body {
     max-height:calc(100vh - 10px);
     overflow:visible;
     position:relative;
+    transition:opacity 1.5s ease;
 }
 
 #albumArt {
@@ -259,6 +348,56 @@ body {
     100% { background-color:var(--panel-bg); }
 }
 
+/* Idle: fade the song panel out and show a quiet "Listening..." label */
+#idle {
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:rgba(255,255,255,0.55);
+    font-size:1.6rem;
+    letter-spacing:0.04em;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity 1.5s ease;
+}
+body.idle #panel { opacity:0; }
+body.idle #idle { opacity:1; animation:breathe 4s ease-in-out infinite; }
+@keyframes breathe {
+    0%,100% { color:rgba(255,255,255,0.35); }
+    50%     { color:rgba(255,255,255,0.7); }
+}
+
+/* WiFi setup view, sized for a 480x320 panel */
+#setup {
+    display:none;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:2vh;
+    width:100%;
+    height:100%;
+    color:#fff;
+    text-align:center;
+}
+body.setup #panel, body.setup #idle { display:none; }
+body.setup #setup { display:flex; }
+#setup h1 { margin:0; font-size:1.25rem; font-weight:600; }
+.qr-row { display:flex; gap:6vw; justify-content:center; }
+.qr-cell { display:flex; flex-direction:column; align-items:center; gap:1vh; }
+.qr-cell img {
+    width:min(30vw, 52vh);
+    height:min(30vw, 52vh);
+    background:#fff;
+    border-radius:8px;
+    image-rendering:pixelated;
+}
+.qr-cell .cap { font-size:0.95rem; font-weight:600; }
+.qr-cell .sub { font-size:0.75rem; color:rgba(255,255,255,0.7); }
+#setupStatus { font-size:0.95rem; min-height:1.2em; color:#ffd479; }
+#setupStatus.ok { color:#9be89b; }
+
 html, body, body * {
     cursor: none !important;
 }
@@ -277,48 +416,99 @@ html, body, body * {
           <div id="trackArtist" class="track-artist clamp2"></div>
       </div>
   </div>
+  <div id="idle">Listening&hellip;</div>
+  <div id="setup">
+      <h1>Wi-Fi setup</h1>
+      <div class="qr-row">
+          <div class="qr-cell">
+              <img src="/qr/wifi.svg" alt="">
+              <div class="cap">1. Scan to join</div>
+              <div class="sub" id="hotspotInfo">__HOTSPOT_INFO__</div>
+          </div>
+          <div class="qr-cell">
+              <img src="/qr/portal.svg" alt="">
+              <div class="cap">2. Scan to set up</div>
+              <div class="sub">__PORTAL_URL__</div>
+          </div>
+      </div>
+      <div id="setupStatus"></div>
+  </div>
 
 <script>
 const POLL_INTERVAL = __POLL_INTERVAL_MS__;
+const IDLE_TIMEOUT = __IDLE_TIMEOUT__;
+const FETCH_TIMEOUT = 4000;
 let lastId = "";
 let lastArtURL = "";
+let colorToken = 0;
 
 async function fetchTrack() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
     try {
-        const res = await fetch('/current?ts=' + Date.now());
-        if(!res.ok) return;
-        const data = await res.json();
-        const title = data.title || '-';
-        const artist = data.artist || '-';
-        const art = data.album_art || '';
-        const newId = title + '|' + artist + '|' + art;
-        if (newId !== lastId) {
-            const panel = document.getElementById('panel');
-            panel.classList.remove('flash');
-            void panel.offsetWidth;
-            panel.classList.add('flash');
-
-            const titleEl = document.getElementById('trackTitle');
-            const artistEl = document.getElementById('trackArtist');
-            titleEl.textContent = title;
-            artistEl.textContent = artist;
-
-            const artDiv = document.getElementById('albumArt');
-            if (art) {
-                artDiv.style.backgroundImage = 'url(' + art + ')';
-                if (art !== lastArtURL) extractAndApplyDominantColor(art);
-            } else {
-                artDiv.style.backgroundImage = 'none';
-            }
-            lastArtURL = art;
-
-            resetLayoutAllowances();
-            fitPanel();
-            lastId = newId;
-        }
+        const res = await fetch('/current?ts=' + Date.now(), {signal: ctrl.signal, cache: 'no-store'});
+        if (res.ok) render(await res.json());
     } catch(e) {
-        console.error(e);
+        console.warn('fetch /current failed:', e);
+    } finally {
+        clearTimeout(timer);
+        setTimeout(fetchTrack, POLL_INTERVAL);
     }
+}
+
+function render(data) {
+    if (renderSetup(data.setup)) return;
+
+    const idle = IDLE_TIMEOUT > 0 && (!data.updated || (data.now - data.updated) > IDLE_TIMEOUT);
+    document.body.classList.toggle('idle', idle);
+
+    const title = data.title || '-';
+    const artist = data.artist || '-';
+    const art = data.album_art || '';
+    const newId = title + '|' + artist + '|' + art;
+    if (newId === lastId) return;
+
+    const panel = document.getElementById('panel');
+    panel.classList.remove('flash');
+    void panel.offsetWidth;
+    panel.classList.add('flash');
+
+    document.getElementById('trackTitle').textContent = title;
+    document.getElementById('trackArtist').textContent = artist;
+
+    const artDiv = document.getElementById('albumArt');
+    if (art) {
+        artDiv.style.backgroundImage = 'url("' + art.replace(/["\\\n]/g, '\\$&') + '")';
+        if (art !== lastArtURL) extractAndApplyDominantColor(art);
+    } else {
+        artDiv.style.backgroundImage = 'none';
+        colorToken++;                       // drop any in-flight color extraction
+        document.body.style.background = '';  // back to the CSS fallback gradient
+    }
+    lastArtURL = art;
+
+    resetLayoutAllowances();
+    fitPanel();
+    lastId = newId;
+}
+
+const SETUP_MESSAGES = {
+    waiting:    '',
+    connecting: 'Connecting to ',
+    failed:     'Couldn’t connect — check the password and try again',
+    connected:  'Connected!'
+};
+
+function renderSetup(setup) {
+    const active = !!(setup && setup.mode === 'setup');
+    document.body.classList.toggle('setup', active);
+    if (!active) return false;
+    const status = document.getElementById('setupStatus');
+    let msg = SETUP_MESSAGES[setup.status] || '';
+    if (setup.status === 'connecting') msg += (setup.ssid || 'network') + '…';
+    status.textContent = msg;
+    status.classList.toggle('ok', setup.status === 'connected');
+    return true;
 }
 
 function resetLayoutAllowances() {
@@ -357,10 +547,12 @@ function getArtSize() {
 }
 
 function extractAndApplyDominantColor(url) {
+    const token = ++colorToken;
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.referrerPolicy = "no-referrer";
     img.onload = () => {
+        if (token !== colorToken) return;   // a newer track (or no art) superseded this load
         try {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
@@ -395,15 +587,25 @@ function extractAndApplyDominantColor(url) {
     img.src = url;
 }
 
-setInterval(fetchTrack, POLL_INTERVAL);
 fetchTrack();
-window.addEventListener('resize', fitPanel);
+window.addEventListener('resize', () => { resetLayoutAllowances(); fitPanel(); });
 </script>
 </body>
 </html>
 """
 
-HTML_PAGE = HTML_PAGE.replace("__POLL_INTERVAL_MS__", str(POLL_INTERVAL_MS))
+
+def _html_escape(value: str) -> str:
+    return (value.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+HTML_PAGE = (HTML_PAGE
+             .replace("__POLL_INTERVAL_MS__", str(POLL_INTERVAL_MS))
+             .replace("__IDLE_TIMEOUT__", str(IDLE_TIMEOUT))
+             .replace("__HOTSPOT_INFO__", _html_escape(
+                 "%s / %s" % (CONF["HOTSPOT_SSID"], CONF["HOTSPOT_PASSWORD"])))
+             .replace("__PORTAL_URL__", _html_escape(PORTAL_URL.replace("http://", ""))))
 
 # --------------------------------------------------------------------------------------
 # Routes
@@ -415,7 +617,25 @@ def index():
 @app.route("/current")
 def current():
     with track_lock:
-        return jsonify(current_track)
+        data = dict(current_track)
+    data["now"] = int(time.time())
+    data["setup"] = read_setup_state()
+    return jsonify(data)
+
+@app.route("/qr/<name>.svg")
+def qr(name):
+    if name == "wifi":
+        payload = "WIFI:T:WPA;S:%s;P:%s;;" % (wifi_qr_escape(CONF["HOTSPOT_SSID"]),
+                                               wifi_qr_escape(CONF["HOTSPOT_PASSWORD"]))
+    elif name == "portal":
+        payload = PORTAL_URL
+    else:
+        abort(404)
+    svg = qr_svg(payload)
+    if svg is None:
+        abort(503)
+    return Response(svg, mimetype="image/svg+xml",
+                    headers={"Cache-Control": "max-age=3600"})
 
 # --------------------------------------------------------------------------------------
 # Shutdown Handling
@@ -423,15 +643,8 @@ def current():
 def shutdown_signal(signum, frame):
     log.info("Signal %s received, initiating shutdown...", signum)
     stop_event.set()
-    global proc_ref
-    if proc_ref and proc_ref.poll() is None:
-        log.info("Terminating songrec subprocess...")
-        try:
-            proc_ref.terminate()
-            proc_ref.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            log.warning("songrec did not terminate; killing.")
-            proc_ref.kill()
+    terminate_songrec()
+    sys.exit(0)  # raises SystemExit in the main thread, which stops the Flask server
 
 signal.signal(signal.SIGTERM, shutdown_signal)
 signal.signal(signal.SIGINT, shutdown_signal)
@@ -449,7 +662,7 @@ def start_background_threads():
 # --------------------------------------------------------------------------------------
 def main():
     start_background_threads()
-    host = os.environ.get("HOST", "0.0.0.0")
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
     log.info("Starting Flask on %s:%s", host, port)
     app.run(host=host, port=port, threaded=True)
