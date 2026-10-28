@@ -61,3 +61,14 @@ Add: `update.sh`, `scripts/kiosk.sh`, `config/songrecpi.conf`, `.gitignore`. Del
 - `wifi-portal.py` with a sample networks file (escaped colons, HTML-ish SSID, open network) and a stub `nmcli` on PATH for success/failure paths.
 - `install.sh` / `update.sh`: run in a dry-run mode (`DRY_RUN=1` echoes privileged commands) to check flow for desktop and Lite.
 - On-device (user): `bash update.sh` on the current Pi; boot with/without known WiFi; wrong-password retry; scan QR codes; optionally a fresh Lite install.
+
+### WiFi testing constraint (no ethernet)
+The Pi (`pi@vinyl.local`) is reachable only over WiFi. Over SSH, **never** start the hotspot, run `wifi-portal-start.sh`, or take down `wlan0` — it cuts off the connection. Test the portal code locally (sample networks file, stub `nmcli`), then hand the user this manual checklist:
+
+1. Make the home network unavailable (router WiFi off, or Pi out of range) and reboot the Pi → `SongRecPi` hotspot starts and the screen shows the QR codes.
+2. Scan QR 1 to join the hotspot → the setup page pops up (if not, scan QR 2).
+3. Enter a wrong password → screen and setup page both show the failure, and the hotspot comes back for a retry.
+4. Enter the right password → Pi joins the network, screen returns to song mode, SSH works again.
+5. Reboot with the router on → Pi connects normally and does not start the hotspot.
+
+Recovery if something goes wrong: join the hotspot if it's up and use the setup page; otherwise plug in a keyboard and run `sudo nmcli dev wifi connect "<SSID>" password "<password>"`. The saved home network is never deleted, so restoring the router and rebooting also recovers it.
