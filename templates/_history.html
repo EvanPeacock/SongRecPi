@@ -1,0 +1,17 @@
+{% if history %}
+<ul class="history">
+    {% for item in history %}
+    <li>
+        <div class="art" {% if item.album_art %}style="background-image:url('{{ item.album_art }}')"{% endif %}></div>
+        <div class="meta">
+            <div class="title">{{ item.title }}</div>
+            <div class="artist">{{ item.artist }}</div>
+            <div class="when">{{ item.time | clock }}</div>
+            <div class="links">{% for link in item.links %}<a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.name }}</a>{% endfor %}</div>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p>Nothing yet. Songs show up here as they're recognized.</p>
+{% endif %}

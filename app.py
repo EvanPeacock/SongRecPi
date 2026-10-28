@@ -422,21 +422,33 @@ def qr(name):
     return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": cache})
 
 
+def history_items() -> List[Dict[str, Any]]:
+    """Newest first, with streaming links (copies, so links aren't saved to disk)."""
+    with track_lock:
+        items = [dict(h) for h in reversed(history)]
+    for item in items:
+        item["links"] = streaming_links(item)
+    return items
+
+
 @app.route("/")
 def index():
     if wifi.in_setup():
         return setup_page()
     with track_lock:
         track = dict(current_track)
-        items = [dict(h) for h in reversed(history)]
-    for item in items:
-        item["links"] = streaming_links(item)
     return render_template(
         "settings.html",
-        track=track, view=kiosk_view(time.time()), muted=muted, history=items,
+        track=track, view=kiosk_view(time.time()), muted=muted, history=history_items(),
         saved=wifi.saved_networks(), visible=wifi.visible_networks(),
         urls=settings_urls(),
     )
+
+
+@app.route("/history")
+def history_fragment():
+    """Just the history list, for the settings page's Refresh button."""
+    return render_template("_history.html", history=history_items())
 
 
 @app.route("/wifi/add", methods=["POST"])
